@@ -29,7 +29,7 @@ from .utils import (
     stream_decode_response_unicode, to_key_val_list, parse_header_links,
     iter_slices, guess_json_utf, super_len, to_native_string)
 from .compat import (
-    cookielib, urlunparse, urlsplit, urlencode, str, bytes, StringIO,
+    cookielib, urlunparse, urlsplit, urlencode, quote, str, bytes, StringIO,
     is_py2, chardet, json, builtin_str, basestring, IncompleteRead)
 
 CONTENT_CHUNK_SIZE = 10 * 1024
@@ -61,12 +61,16 @@ class RequestEncodingMixin(object):
         return ''.join(url)
 
     @staticmethod
-    def _encode_params(data):
+    def _encode_params(data, as_url=False):
         """Encode parameters in a piece of data.
 
         Will successfully encode parameters when passed as a dict or a list of
         2-tuples. Order is retained if data is a list of 2-tuples but arbitrary
         if parameters are supplied as a dict.
+
+        as_url is used to bypass a bug where urlencode uses quote_plus instead
+        of quote, which is non-standard (standard is '%20') for query string
+        parameters since + is a reserved character by RFC 2396.
         """
 
         if isinstance(data, (str, bytes)):
@@ -76,14 +80,26 @@ class RequestEncodingMixin(object):
         elif hasattr(data, '__iter__'):
             result = []
             for k, vs in to_key_val_list(data):
+                if not isinstance(k, bytes):
+                    k = str(k).encode('utf-8')
                 if isinstance(vs, basestring) or not hasattr(vs, '__iter__'):
                     vs = [vs]
                 for v in vs:
                     if v is not None:
-                        result.append(
-                            (k.encode('utf-8') if isinstance(k, str) else k,
-                             v.encode('utf-8') if isinstance(v, str) else v))
-            return urlencode(result, doseq=True)
+                        if not isinstance(v, bytes):
+                            v = str(v).encode('utf-8')
+                        result.append((k, v))
+
+            if as_url:
+                """
+                Also since sequences are handled above, it is not re-handled at this stage
+                """
+                parts = []
+                for k, v in result:
+                    parts.append(quote(k, safe='') + '=' +  quote(v, safe=''))
+                return '&'.join(parts)
+            else:
+                return urlencode(result, doseq=True)
         else:
             return data
 
@@ -370,7 +386,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
             if isinstance(fragment, str):
                 fragment = fragment.encode('utf-8')
 
-        enc_params = self._encode_params(params)
+        enc_params = self._encode_params(params, as_url=True)
         if enc_params:
             if query:
                 query = '%s&%s' % (query, enc_params)
